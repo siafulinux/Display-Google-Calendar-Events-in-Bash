@@ -22,6 +22,7 @@ It displays today's events first, followed by the complete Monday-Sunday calenda
 ## Example
 
 ```text
+```text
 Google Calendar
 Wednesday, September 9, 2026
 ────────────────────────────────────────────────────────────
