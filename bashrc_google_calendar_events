@@ -1,82 +1,264 @@
-#!/bin/bash
+```bash
+#!/usr/bin/env bash
 
-# Replace these with your actual API key and calendar ID
-API_KEY="<google api key>"
-CALENDAR_ID="<google calendar id you want to pull from>"
+# ==============================================================================
+# Google Calendar CLI Viewer
+# ==============================================================================
+#
+# Displays:
+#   - Today's calendar events
+#   - Events for the current Monday-Sunday week
+#
+# Requirements:
+#   - curl
+#   - jq
+#   - GNU date
+#
+# Configuration:
+#   Set GOOGLE_API_KEY in your environment, or replace the placeholder below.
+#
+# Example:
+#   export GOOGLE_API_KEY="your-api-key"
+#   export CALENDAR_ID="your-calendar-id"
+#
+# ==============================================================================
 
-# Get today's date in UTC
-TODAY=$(date -u +"%Y-%m-%d")
-START_TIME="${TODAY}T05:00:00Z"
-END_TIME="${TODAY}T23:59:59Z"
+set -o pipefail
 
-# Get this week's date range (Monday to Sunday)
-THIS_WEEK_START=$(date -u -d 'last Sunday' +"%Y-%m-%d")  # last Sunday
-THIS_WEEK_END=$(date -u -d 'next Saturday' +"%Y-%m-%d")  # next Saturday
+# ------------------------------------------------------------------------------
+# Configuration
+# ------------------------------------------------------------------------------
 
-# URL encode the calendar ID
-ENCODED_CALENDAR_ID=$(echo $CALENDAR_ID | sed 's/@/%40/g')
+API_KEY="${GOOGLE_API_KEY:-<google-api-key>}"
+CALENDAR_ID="${CALENDAR_ID:-<google-calendar-id>}"
 
-# Construct the API URL
-URL="https://www.googleapis.com/calendar/v3/calendars/${ENCODED_CALENDAR_ID}/events"
-
-# Make the API request using curl and process with jq
-RESPONSE=$(curl -s "${URL}?key=${API_KEY}&timeMin=${START_TIME}&timeMax=${END_TIME}&singleEvents=true&orderBy=startTime&fields=items(summary,start,end)" \
-  -H "Accept: application/json")
-
-# Check if there are any events
-EVENT_COUNT=$(echo $RESPONSE | jq '.items | length')
-
-if [ "$EVENT_COUNT" -eq "0" ] || [ "$EVENT_COUNT" = "null" ]; then
-    echo "No events for today."
-    exit 0
+if [[ "$API_KEY" == "<google-api-key>" || -z "$API_KEY" ]]; then
+    echo "Error: Google Calendar API key has not been configured."
+    echo
+    echo "Set it with:"
+    echo '  export GOOGLE_API_KEY="your-api-key"'
+    exit 1
 fi
 
-# Print header for today's events
-echo "Today's Events ($(date -u +"%B %d, %Y")):"
-echo "-----------------------------------------"
+if [[ "$CALENDAR_ID" == "<google-calendar-id>" || -z "$CALENDAR_ID" ]]; then
+    echo "Error: Calendar ID has not been configured."
+    echo
+    echo "Set it with:"
+    echo '  export CALENDAR_ID="your-calendar-id"'
+    exit 1
+fi
 
-# Function to convert datetime to HHMM format
-convert_to_HHMM() {
-    local datetime=$1
-    if [[ $datetime == *"T"* ]]; then
-        echo $datetime | cut -d'T' -f2 | cut -d':' -f1,2 | tr -d ':'
+# ------------------------------------------------------------------------------
+# Date and time
+# ------------------------------------------------------------------------------
+
+TODAY="$(date -u +%Y-%m-%d)"
+
+# Monday through Sunday for the current week.
+WEEK_START="$(date -u -d 'monday this week' +%Y-%m-%d)"
+WEEK_END="$(date -u -d 'monday this week + 6 days' +%Y-%m-%d)"
+
+WEEK_START_ISO="${WEEK_START}T00:00:00Z"
+WEEK_END_ISO="$(date -u -d "$WEEK_END + 1 day" +%Y-%m-%d)T00:00:00Z"
+
+# ------------------------------------------------------------------------------
+# URL encode the calendar ID
+# ------------------------------------------------------------------------------
+
+if command -v jq >/dev/null 2>&1; then
+    ENCODED_CALENDAR_ID="$(jq -rn --arg value "$CALENDAR_ID" '$value|@uri')"
+else
+    echo "Error: jq is required but was not found."
+    exit 1
+fi
+
+URL="https://www.googleapis.com/calendar/v3/calendars/${ENCODED_CALENDAR_ID}/events"
+
+# ------------------------------------------------------------------------------
+# Retrieve calendar events
+# ------------------------------------------------------------------------------
+
+RESPONSE="$(
+    curl \
+        --silent \
+        --show-error \
+        --fail-with-body \
+        --get \
+        --url "$URL" \
+        --header "Accept: application/json" \
+        --data-urlencode "key=${API_KEY}" \
+        --data-urlencode "timeMin=${WEEK_START_ISO}" \
+        --data-urlencode "timeMax=${WEEK_END_ISO}" \
+        --data-urlencode "singleEvents=true" \
+        --data-urlencode "orderBy=startTime" \
+        --data-urlencode "fields=items(summary,start,end)"
+)"
+
+CURL_STATUS=$?
+
+if [[ $CURL_STATUS -ne 0 ]]; then
+    echo "Error: Unable to retrieve Google Calendar events."
+    echo
+    printf '%s\n' "$RESPONSE"
+    exit 1
+fi
+
+# ------------------------------------------------------------------------------
+# Validate the JSON response
+# ------------------------------------------------------------------------------
+
+if ! jq empty >/dev/null 2>&1 <<< "$RESPONSE"; then
+    echo "Error: Google Calendar returned invalid JSON."
+    exit 1
+fi
+
+# ------------------------------------------------------------------------------
+# Helper functions
+# ------------------------------------------------------------------------------
+
+format_time() {
+    local datetime="$1"
+
+    if [[ "$datetime" == *T* ]]; then
+        date -u -d "$datetime" +"%H:%M"
     else
         echo "All Day"
     fi
 }
 
-# Find maximum title length
-MAX_LENGTH=$(echo $RESPONSE | jq -r '.items[].summary | length' | sort -nr | head -n1)
-if [ -z "$MAX_LENGTH" ]; then
-    MAX_LENGTH=20  # default value if no events have titles
+format_day() {
+    local date_value="$1"
+
+    date -u -d "$date_value" +"%A"
+}
+
+format_date() {
+    local date_value="$1"
+
+    date -u -d "$date_value" +"%B %d, %Y"
+}
+
+# ------------------------------------------------------------------------------
+# Today's events
+# ------------------------------------------------------------------------------
+
+TODAY_EVENTS="$(
+    jq -c --arg today "$TODAY" '
+        [
+            .items[]
+            | select(
+                (.start.dateTime // .start.date) >= $today
+                and
+                (.start.dateTime // .start.date) < ($today + "T23:59:59Z")
+            )
+        ]
+    ' <<< "$RESPONSE"
+)"
+
+TODAY_COUNT="$(jq 'length' <<< "$TODAY_EVENTS")"
+
+echo
+echo "Today's Events ($(format_date "$TODAY"))"
+echo "========================================="
+
+if [[ "$TODAY_COUNT" -eq 0 ]]; then
+    echo "No events for today."
+else
+    # Determine the longest event title for aligned output.
+    MAX_LENGTH="$(
+        jq -r '.[].summary // "(No title)"' <<< "$TODAY_EVENTS" |
+        awk '{ if (length > max) max = length } END { print max + 0 }'
+    )"
+
+    (( MAX_LENGTH < 20 )) && MAX_LENGTH=20
+
+    while IFS=$'\t' read -r summary start_time end_time; do
+        start_formatted="$(format_time "$start_time")"
+        end_formatted="$(format_time "$end_time")"
+
+        printf "%-${MAX_LENGTH}s : %s - %s\n" \
+            "$summary" \
+            "$start_formatted" \
+            "$end_formatted"
+
+    done < <(
+        jq -r '
+            .[]
+            | [
+                (.summary // "(No title)"),
+                (.start.dateTime // .start.date),
+                (.end.dateTime // .end.date)
+              ]
+            | @tsv
+        ' <<< "$TODAY_EVENTS"
+    )
 fi
 
-# Process and display today's events
-echo $RESPONSE | jq -r '.items[] | "\(.summary)\t\(.start.dateTime // .start.date)\t\(.end.dateTime // .end.date)"' | \
+# ------------------------------------------------------------------------------
+# This week's events
+# ------------------------------------------------------------------------------
+
+echo
+echo "This Week's Events"
+echo "=================="
+echo "$(format_date "$WEEK_START") - $(format_date "$WEEK_END")"
+echo
+
+WEEK_COUNT="$(jq '.items | length' <<< "$RESPONSE")"
+
+if [[ "$WEEK_COUNT" -eq 0 ]]; then
+    echo "No events scheduled this week."
+    exit 0
+fi
+
+CURRENT_DAY=""
+
 while IFS=$'\t' read -r summary start_time end_time; do
-    start_formatted=$(convert_to_HHMM "$start_time")
-    end_formatted=$(convert_to_HHMM "$end_time")
-    printf "%-${MAX_LENGTH}s: %s - %s\n" "$summary" "$start_formatted" "$end_formatted"
-done
 
-# Get upcoming events for the rest of the week
-echo ""
-echo "This Week's Events:"
-echo "-------------------"
+    # Determine the event date.
+    if [[ "$start_time" == *T* ]]; then
+        EVENT_DATE="${start_time%%T*}"
+    else
+        EVENT_DATE="$start_time"
+    fi
 
-# Filter events for the rest of the week
-THIS_WEEK_EVENTS=$(curl -s "${URL}?key=${API_KEY}&timeMin=${THIS_WEEK_START}T00:00:00Z&timeMax=${THIS_WEEK_END}T23:59:59Z&singleEvents=true&orderBy=startTime&fields=items(summary,start,end)" \
-  -H "Accept: application/json")
+    EVENT_DAY="$(format_day "$EVENT_DATE")"
 
-# Process and display events for the rest of the week
-echo $THIS_WEEK_EVENTS | jq -r '.items[] | "\(.summary)\t\(.start.dateTime // .start.date)\t\(.end.dateTime // .end.date)"' | \
-while IFS=$'\t' read -r summary start_time end_time; do
-    start_formatted=$(convert_to_HHMM "$start_time")
-    end_formatted=$(convert_to_HHMM "$end_time")
-    
-    # Get the day of the week for the event
-    event_date=$(echo $start_time | cut -d'T' -f1)
-    event_day=$(date -u -d "$event_date" +"%A the %eth")
-    
-    printf "%s : %s  - %s\n" "$event_day" "$start_formatted" "$summary"
-done
+    # Print a day heading when the date changes.
+    if [[ "$EVENT_DATE" != "$CURRENT_DAY" ]]; then
+        [[ -n "$CURRENT_DAY" ]] && echo
+
+        echo "$EVENT_DAY, $(format_date "$EVENT_DATE")"
+        echo "------------------------------"
+
+        CURRENT_DAY="$EVENT_DATE"
+    fi
+
+    start_formatted="$(format_time "$start_time")"
+    end_formatted="$(format_time "$end_time")"
+
+    if [[ "$start_formatted" == "All Day" ]]; then
+        printf "  %-8s %s\n" \
+            "All Day" \
+            "$summary"
+    else
+        printf "  %s - %-5s %s\n" \
+            "$start_formatted" \
+            "$end_formatted" \
+            "$summary"
+    fi
+
+done < <(
+    jq -r '
+        .items[]
+        | [
+            (.summary // "(No title)"),
+            (.start.dateTime // .start.date),
+            (.end.dateTime // .end.date)
+          ]
+        | @tsv
+    ' <<< "$RESPONSE"
+)
+
+echo
+```
