@@ -195,6 +195,3 @@ This means only one Google Calendar API request is required for each execution.
 ## License
 
 Choose a license appropriate for your project.
-
-```
-```
