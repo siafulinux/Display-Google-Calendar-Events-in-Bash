@@ -2,119 +2,158 @@
 #!/usr/bin/env bash
 
 # ==============================================================================
-# Google Calendar CLI Viewer
+# Google Calendar CLI
 # ==============================================================================
 #
+# A lightweight terminal viewer for Google Calendar.
+#
 # Displays:
-#   - Today's calendar events
+#   - Today's events
 #   - Events for the current Monday-Sunday week
+#   - Timed and all-day events
 #
 # Requirements:
+#   - bash
 #   - curl
 #   - jq
-#   - GNU date
+#   - GNU coreutils (date)
 #
 # Configuration:
-#   Set GOOGLE_API_KEY in your environment, or replace the placeholder below.
+#   Create a "config" file from "example.config".
 #
-# Example:
-#   export GOOGLE_API_KEY="your-api-key"
-#   export CALENDAR_ID="your-calendar-id"
+# Usage:
+#   ./calendar.sh
 #
 # ==============================================================================
 
 set -o pipefail
 
 # ------------------------------------------------------------------------------
-# Configuration
+# Colors
 # ------------------------------------------------------------------------------
 
-API_KEY="${GOOGLE_API_KEY:-<google-api-key>}"
-CALENDAR_ID="${CALENDAR_ID:-<google-calendar-id>}"
+if [[ -t 1 ]]; then
+    RESET='\033[0m'
+    BOLD='\033[1m'
+    DIM='\033[2m'
+    CYAN='\033[36m'
+    GREEN='\033[32m'
+    YELLOW='\033[33m'
+    BLUE='\033[34m'
+    RED='\033[31m'
+    WHITE='\033[97m'
+else
+    RESET=''
+    BOLD=''
+    DIM=''
+    CYAN=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    RED=''
+    WHITE=''
+fi
 
-if [[ "$API_KEY" == "<google-api-key>" || -z "$API_KEY" ]]; then
-    echo "Error: Google Calendar API key has not been configured."
+# ------------------------------------------------------------------------------
+# Locate script directory
+# ------------------------------------------------------------------------------
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${SCRIPT_DIR}/config"
+
+# ------------------------------------------------------------------------------
+# Load configuration
+# ------------------------------------------------------------------------------
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo -e "${RED}Error:${RESET} Configuration file not found."
     echo
-    echo "Set it with:"
-    echo '  export GOOGLE_API_KEY="your-api-key"'
+    echo "Create it from the example:"
+    echo
+    echo "    cp example.config config"
+    echo
+    echo "Then edit:"
+    echo
+    echo "    nano config"
     exit 1
 fi
 
-if [[ "$CALENDAR_ID" == "<google-calendar-id>" || -z "$CALENDAR_ID" ]]; then
-    echo "Error: Calendar ID has not been configured."
+# shellcheck source=/dev/null
+source "$CONFIG_FILE"
+
+# ------------------------------------------------------------------------------
+# Validate configuration
+# ------------------------------------------------------------------------------
+
+if [[ -z "${GOOGLE_API_KEY:-}" || "$GOOGLE_API_KEY" == "your-google-api-key-here" ]]; then
+    echo -e "${RED}Error:${RESET} GOOGLE_API_KEY is not configured."
     echo
-    echo "Set it with:"
-    echo '  export CALENDAR_ID="your-calendar-id"'
+    echo "Edit:"
+    echo "    $CONFIG_FILE"
+    exit 1
+fi
+
+if [[ -z "${CALENDAR_ID:-}" || "$CALENDAR_ID" == "your-calendar-id-here" ]]; then
+    echo -e "${RED}Error:${RESET} CALENDAR_ID is not configured."
+    echo
+    echo "Edit:"
+    echo "    $CONFIG_FILE"
     exit 1
 fi
 
 # ------------------------------------------------------------------------------
-# Date and time
+# Check dependencies
+# ------------------------------------------------------------------------------
+
+for command in curl jq date; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+        echo -e "${RED}Error:${RESET} Required command not found: $command"
+        echo
+        echo "Install the required packages with:"
+        echo
+        echo "    sudo apt install curl jq"
+        exit 1
+    fi
+done
+
+# ------------------------------------------------------------------------------
+# Date calculations
 # ------------------------------------------------------------------------------
 
 TODAY="$(date -u +%Y-%m-%d)"
+TODAY_DISPLAY="$(date -u +"%A, %B %d, %Y")"
 
-# Monday through Sunday for the current week.
 WEEK_START="$(date -u -d 'monday this week' +%Y-%m-%d)"
 WEEK_END="$(date -u -d 'monday this week + 6 days' +%Y-%m-%d)"
+
+WEEK_START_DISPLAY="$(date -u -d "$WEEK_START" +"%B %d, %Y")"
+WEEK_END_DISPLAY="$(date -u -d "$WEEK_END" +"%B %d, %Y")"
 
 WEEK_START_ISO="${WEEK_START}T00:00:00Z"
 WEEK_END_ISO="$(date -u -d "$WEEK_END + 1 day" +%Y-%m-%d)T00:00:00Z"
 
 # ------------------------------------------------------------------------------
-# URL encode the calendar ID
+# URL encode calendar ID
 # ------------------------------------------------------------------------------
 
-if command -v jq >/dev/null 2>&1; then
-    ENCODED_CALENDAR_ID="$(jq -rn --arg value "$CALENDAR_ID" '$value|@uri')"
-else
-    echo "Error: jq is required but was not found."
-    exit 1
-fi
+ENCODED_CALENDAR_ID="$(jq -rn --arg value "$CALENDAR_ID" '$value | @uri')"
 
-URL="https://www.googleapis.com/calendar/v3/calendars/${ENCODED_CALENDAR_ID}/events"
+API_URL="https://www.googleapis.com/calendar/v3/calendars/${ENCODED_CALENDAR_ID}/events"
 
 # ------------------------------------------------------------------------------
-# Retrieve calendar events
+# Display helpers
 # ------------------------------------------------------------------------------
 
-RESPONSE="$(
-    curl \
-        --silent \
-        --show-error \
-        --fail-with-body \
-        --get \
-        --url "$URL" \
-        --header "Accept: application/json" \
-        --data-urlencode "key=${API_KEY}" \
-        --data-urlencode "timeMin=${WEEK_START_ISO}" \
-        --data-urlencode "timeMax=${WEEK_END_ISO}" \
-        --data-urlencode "singleEvents=true" \
-        --data-urlencode "orderBy=startTime" \
-        --data-urlencode "fields=items(summary,start,end)"
-)"
+print_rule() {
+    printf '%s\n' "${DIM}────────────────────────────────────────────────────────────${RESET}"
+}
 
-CURL_STATUS=$?
-
-if [[ $CURL_STATUS -ne 0 ]]; then
-    echo "Error: Unable to retrieve Google Calendar events."
+print_header() {
     echo
-    printf '%s\n' "$RESPONSE"
-    exit 1
-fi
-
-# ------------------------------------------------------------------------------
-# Validate the JSON response
-# ------------------------------------------------------------------------------
-
-if ! jq empty >/dev/null 2>&1 <<< "$RESPONSE"; then
-    echo "Error: Google Calendar returned invalid JSON."
-    exit 1
-fi
-
-# ------------------------------------------------------------------------------
-# Helper functions
-# ------------------------------------------------------------------------------
+    echo -e "${BOLD}${CYAN}Google Calendar${RESET}"
+    echo -e "${DIM}${TODAY_DISPLAY}${RESET}"
+    print_rule
+}
 
 format_time() {
     local datetime="$1"
@@ -126,17 +165,48 @@ format_time() {
     fi
 }
 
-format_day() {
-    local date_value="$1"
-
-    date -u -d "$date_value" +"%A"
-}
-
 format_date() {
     local date_value="$1"
-
-    date -u -d "$date_value" +"%B %d, %Y"
+    date -u -d "$date_value" +"%A, %B %d"
 }
+
+# ------------------------------------------------------------------------------
+# Retrieve events
+# ------------------------------------------------------------------------------
+
+RESPONSE="$(
+    curl \
+        --silent \
+        --show-error \
+        --fail-with-body \
+        --get \
+        --url "$API_URL" \
+        --header "Accept: application/json" \
+        --data-urlencode "key=${GOOGLE_API_KEY}" \
+        --data-urlencode "timeMin=${WEEK_START_ISO}" \
+        --data-urlencode "timeMax=${WEEK_END_ISO}" \
+        --data-urlencode "singleEvents=true" \
+        --data-urlencode "orderBy=startTime" \
+        --data-urlencode "fields=items(summary,start,end)"
+)"
+
+CURL_STATUS=$?
+
+if [[ $CURL_STATUS -ne 0 ]]; then
+    echo -e "${RED}Error:${RESET} Unable to retrieve Google Calendar events."
+    echo
+    printf '%s\n' "$RESPONSE"
+    exit 1
+fi
+
+# ------------------------------------------------------------------------------
+# Validate response
+# ------------------------------------------------------------------------------
+
+if ! jq empty >/dev/null 2>&1 <<< "$RESPONSE"; then
+    echo -e "${RED}Error:${RESET} Google Calendar returned invalid JSON."
+    exit 1
+fi
 
 # ------------------------------------------------------------------------------
 # Today's events
@@ -147,9 +217,7 @@ TODAY_EVENTS="$(
         [
             .items[]
             | select(
-                (.start.dateTime // .start.date) >= $today
-                and
-                (.start.dateTime // .start.date) < ($today + "T23:59:59Z")
+                ((.start.dateTime // .start.date) | startswith($today))
             )
         ]
     ' <<< "$RESPONSE"
@@ -157,29 +225,34 @@ TODAY_EVENTS="$(
 
 TODAY_COUNT="$(jq 'length' <<< "$TODAY_EVENTS")"
 
+# ------------------------------------------------------------------------------
+# Header
+# ------------------------------------------------------------------------------
+
+print_header
+
+# ------------------------------------------------------------------------------
+# Today's events
+# ------------------------------------------------------------------------------
+
 echo
-echo "Today's Events ($(format_date "$TODAY"))"
-echo "========================================="
+echo -e "${BOLD}${WHITE}TODAY${RESET}"
+echo
 
 if [[ "$TODAY_COUNT" -eq 0 ]]; then
-    echo "No events for today."
+    echo -e "  ${DIM}No events scheduled for today.${RESET}"
 else
-    # Determine the longest event title for aligned output.
-    MAX_LENGTH="$(
-        jq -r '.[].summary // "(No title)"' <<< "$TODAY_EVENTS" |
-        awk '{ if (length > max) max = length } END { print max + 0 }'
-    )"
-
-    (( MAX_LENGTH < 20 )) && MAX_LENGTH=20
 
     while IFS=$'\t' read -r summary start_time end_time; do
+
         start_formatted="$(format_time "$start_time")"
         end_formatted="$(format_time "$end_time")"
 
-        printf "%-${MAX_LENGTH}s : %s - %s\n" \
-            "$summary" \
-            "$start_formatted" \
-            "$end_formatted"
+        if [[ "$start_formatted" == "All Day" ]]; then
+            echo -e "  ${GREEN}All Day${RESET}  ${summary}"
+        else
+            echo -e "  ${CYAN}${start_formatted}${RESET} - ${CYAN}${end_formatted}${RESET}  ${summary}"
+        fi
 
     done < <(
         jq -r '
@@ -199,66 +272,77 @@ fi
 # ------------------------------------------------------------------------------
 
 echo
-echo "This Week's Events"
-echo "=================="
-echo "$(format_date "$WEEK_START") - $(format_date "$WEEK_END")"
+print_rule
+echo
+echo -e "${BOLD}${WHITE}THIS WEEK${RESET}"
+echo -e "${DIM}${WEEK_START_DISPLAY} - ${WEEK_END_DISPLAY}${RESET}"
+
 echo
 
 WEEK_COUNT="$(jq '.items | length' <<< "$RESPONSE")"
 
 if [[ "$WEEK_COUNT" -eq 0 ]]; then
-    echo "No events scheduled this week."
-    exit 0
+
+    echo -e "  ${DIM}No events scheduled this week.${RESET}"
+
+else
+
+    CURRENT_DAY=""
+
+    while IFS=$'\t' read -r summary start_time end_time; do
+
+        # Determine event date.
+        if [[ "$start_time" == *T* ]]; then
+            EVENT_DATE="${start_time%%T*}"
+        else
+            EVENT_DATE="$start_time"
+        fi
+
+        # New day heading.
+        if [[ "$EVENT_DATE" != "$CURRENT_DAY" ]]; then
+
+            if [[ -n "$CURRENT_DAY" ]]; then
+                echo
+            fi
+
+            echo -e "${BOLD}${BLUE}$(format_date "$EVENT_DATE")${RESET}"
+            echo -e "${DIM}────────────────────────────────────────${RESET}"
+
+            CURRENT_DAY="$EVENT_DATE"
+        fi
+
+        start_formatted="$(format_time "$start_time")"
+        end_formatted="$(format_time "$end_time")"
+
+        if [[ "$start_formatted" == "All Day" ]]; then
+
+            echo -e "  ${GREEN}All Day${RESET}  ${summary}"
+
+        else
+
+            echo -e "  ${CYAN}${start_formatted}${RESET} - ${CYAN}${end_formatted}${RESET}  ${summary}"
+
+        fi
+
+    done < <(
+        jq -r '
+            .items[]
+            | [
+                (.summary // "(No title)"),
+                (.start.dateTime // .start.date),
+                (.end.dateTime // .end.date)
+              ]
+            | @tsv
+        ' <<< "$RESPONSE"
+    )
 fi
 
-CURRENT_DAY=""
+# ------------------------------------------------------------------------------
+# Footer
+# ------------------------------------------------------------------------------
 
-while IFS=$'\t' read -r summary start_time end_time; do
-
-    # Determine the event date.
-    if [[ "$start_time" == *T* ]]; then
-        EVENT_DATE="${start_time%%T*}"
-    else
-        EVENT_DATE="$start_time"
-    fi
-
-    EVENT_DAY="$(format_day "$EVENT_DATE")"
-
-    # Print a day heading when the date changes.
-    if [[ "$EVENT_DATE" != "$CURRENT_DAY" ]]; then
-        [[ -n "$CURRENT_DAY" ]] && echo
-
-        echo "$EVENT_DAY, $(format_date "$EVENT_DATE")"
-        echo "------------------------------"
-
-        CURRENT_DAY="$EVENT_DATE"
-    fi
-
-    start_formatted="$(format_time "$start_time")"
-    end_formatted="$(format_time "$end_time")"
-
-    if [[ "$start_formatted" == "All Day" ]]; then
-        printf "  %-8s %s\n" \
-            "All Day" \
-            "$summary"
-    else
-        printf "  %s - %-5s %s\n" \
-            "$start_formatted" \
-            "$end_formatted" \
-            "$summary"
-    fi
-
-done < <(
-    jq -r '
-        .items[]
-        | [
-            (.summary // "(No title)"),
-            (.start.dateTime // .start.date),
-            (.end.dateTime // .end.date)
-          ]
-        | @tsv
-    ' <<< "$RESPONSE"
-)
-
+echo
+print_rule
+echo -e "${DIM}Calendar ID: ${CALENDAR_ID}${RESET}"
 echo
 ```
