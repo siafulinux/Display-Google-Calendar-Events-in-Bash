@@ -30,7 +30,7 @@ TODAY
 
   09:00 - 10:00  Morning Meeting
   14:30 - 15:30  Project Work
-  All Day         Submit Application
+  All Day        Submit Application
 
 ────────────────────────────────────────────────────────────
 
@@ -44,14 +44,14 @@ Wednesday, September 09
 
 Thursday, September 10
 ────────────────────────────────────────
-  All Day  Pay Bills
+  All Day        Pay Bills
 
 Saturday, September 12
 ────────────────────────────────────────
   18:00 - 20:00  Dinner
 
 ────────────────────────────────────────────────────────────
-````
+```
 
 ## Requirements
 
