@@ -1,0 +1,21 @@
+```gitignore
+# ==============================================================================
+# Google Calendar CLI
+# ==============================================================================
+
+# Local configuration containing API credentials
+config
+
+# Backup/config variants
+config.*
+!example.config
+
+# Editor files
+*~
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+```
